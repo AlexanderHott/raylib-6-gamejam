@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Dependencies
 set(RAYLIB_VERSION 6.0)
+set(RAYGUI_VERSION 4.0)
 
 FetchContent_Declare(
     raylib
@@ -16,7 +17,14 @@ FetchContent_Declare(
     FIND_PACKAGE_ARGS
 )
 
+FetchContent_Declare(
+    raygui
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://github.com/raysan5/raygui/archive/refs/tags/${RAYGUI_VERSION}.tar.gz
+)
+
 FetchContent_MakeAvailable(raylib)
+FetchContent_MakeAvailable(raygui)
 
 # Our Project
 add_executable(${PROJECT_NAME})
@@ -26,6 +34,10 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PROJECT_NAME})
 
 set_property(TARGET ${PROJECT_NAME} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY $<TARGET_FILE_DIR:${PROJECT_NAME}>)
+
+file(GLOB_RECURSE RESOURCE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/resources/*")
+set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS "${RESOURCE_FILES}")
 
 if ("${PLATFORM}" STREQUAL "Web")
     add_custom_command(
@@ -42,6 +54,7 @@ else()
 endif()
 
 #set(raylib_VERBOSE 1)
+target_include_directories(${PROJECT_NAME} PRIVATE ${raygui_SOURCE_DIR}/src)
 target_link_libraries(${PROJECT_NAME} raylib)
 
 # Web Configurations
