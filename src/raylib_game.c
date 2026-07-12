@@ -86,7 +86,7 @@ static const f32 mergeEndZ = 22.0f;
 static const f32 maximumMergeLaneProgress = 0.20f;
 static const f32 anchorStagger = 0.20f;
 static const f32 anchorRevealDuration = 0.50f;
-static const f32 initialDrawingTime = 4.0f;
+static const f32 initialDrawingTime = 8.0f;
 static const f32 drawingTimeReductionPerPass = 0.25f;
 static const f32 minimumDrawingTime = 2.0f;
 static const f32 slowMotionScale = 0.20f;
@@ -626,20 +626,6 @@ static void DrawRoad(const Renderer *renderer, const GameState *game) {
   }
 }
 
-static const char *GetHexGestureStateName(HexGestureState state) {
-  switch (state) {
-  case HEX_GESTURE_IDLE:
-    return "idle";
-  case HEX_GESTURE_DRAWING:
-    return "drawing";
-  case HEX_GESTURE_SUCCESS:
-    return "success";
-  case HEX_GESTURE_FAILURE:
-    return "failure";
-  }
-  return "unknown";
-}
-
 static u32
 FindGestureAnchorGroup(const GestureAnchorGroup groups[HEX_CHECKPOINTS_MAX],
                        u32 groupCount, Vector2 position) {
@@ -741,21 +727,6 @@ static void DrawHexGesture(const Renderer *renderer,
                Fade(trailColor, 0.20f));
     DrawLineEx(gesture->trail[i - 1], gesture->trail[i], 4.0f, trailColor);
   }
-}
-
-static void DrawHexGestureDebugUi(const HexGesture *gesture) {
-  DrawRectangle(12, 596, 250, 112, Fade(BLACK, 0.72f));
-  DrawRectangleLines(12, 596, 250, 112, Fade(RAYWHITE, 0.55f));
-  DrawText("GESTURE DEBUG", 24, 606, 18, RAYWHITE);
-  DrawText(TextFormat("shape: %s", gesture->shape->name), 24, 630, 16,
-           LIGHTGRAY);
-  DrawText(TextFormat("state: %s", GetHexGestureStateName(gesture->state)), 24,
-           650, 16, LIGHTGRAY);
-  DrawText(TextFormat("checkpoint: %u / %u", gesture->nextCheckpoint,
-                      gesture->shape->checkpointCount),
-           24, 670, 16, LIGHTGRAY);
-  DrawText(TextFormat("trail samples: %u", gesture->trailCount), 24, 690, 16,
-           LIGHTGRAY);
 }
 
 static void DrawTrafficCars(Renderer *renderer, GameState *game) {
@@ -882,9 +853,6 @@ static void DrawGame(Renderer *renderer, GameState *game, u32 highScore) {
                    (Rectangle){0, 0, (f32)renderer->screenWidth,
                                (f32)renderer->screenHeight},
                    (Vector2){0, 0}, 0.0f, WHITE);
-    if (game->phase == GAME_PHASE_MERGING) {
-      DrawHexGestureDebugUi(&game->gesture);
-    }
   }
   EndDrawing();
 }
