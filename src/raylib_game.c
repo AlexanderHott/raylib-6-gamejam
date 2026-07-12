@@ -99,6 +99,7 @@ static const f32 slowMotionScale = 0.20f;
 
 typedef enum GamePhase {
   GAME_PHASE_TITLE,
+  GAME_PHASE_TUTORIAL,
   GAME_PHASE_APPROACH,
   GAME_PHASE_MERGING,
   GAME_PHASE_PASSING,
@@ -135,6 +136,12 @@ typedef struct HexShape {
   Vector2 checkpoints[HEX_CHECKPOINTS_MAX];
   u32 checkpointCount;
 } HexShape;
+
+static const HexShape tutorialHexShape = {
+    .name = "tutorial",
+    .checkpoints = {{0.32f, 0.55f}, {0.68f, 0.55f}},
+    .checkpointCount = 2,
+};
 
 static const HexShape normalHexShapes[] = {
     {.name = "star",
@@ -301,6 +308,7 @@ typedef struct GameState {
   GamePhase phase;
   u32 carsPassed;
   f32 phaseAge;
+  f32 tutorialFailureAge;
   f32 explosionAge;
   f32 encounterDuration;
   f32 encounterTimeRemaining;
@@ -339,6 +347,7 @@ typedef struct AppState {
   Renderer renderer;
   u32 frameCounter;
   u32 highScore;
+  bool tutorialCompleted;
 } AppState;
 
 static AppState app = {0};
@@ -439,7 +448,7 @@ static void ResetGesture(HexGesture *gesture) {
 }
 
 static void SelectEncounterShape(GameState *game) {
-  bool isHardEncounter = (game->carsPassed + 1) % 5 == 0;
+  bool isHardEncounter = (game->carsPassed + 1) % 15 == 0;
   const HexShape *shapes = isHardEncounter ? hardHexShapes : normalHexShapes;
   u32 shapeCount =
       isHardEncounter ? HARD_HEX_SHAPE_COUNT : NORMAL_HEX_SHAPE_COUNT;
@@ -471,6 +480,12 @@ static void EnterGamePhase(GameState *game, GamePhase phase) {
   switch (phase) {
   case GAME_PHASE_TITLE:
     game->timeScale = 0.0f;
+    break;
+  case GAME_PHASE_TUTORIAL:
+    game->timeScale = 0.0f;
+    game->tutorialFailureAge = 0.0f;
+    ResetGesture(&game->gesture);
+    game->gesture.anchorRevealAge = 1.0f;
     break;
   case GAME_PHASE_APPROACH:
     game->timeScale = 1.0f;
@@ -531,6 +546,14 @@ static void InitGame(GameState *game) {
 static void StartRun(GameState *game) {
   InitGame(game);
   StartEncounter(game);
+}
+
+static void StartTutorial(GameState *game) {
+  InitGame(game);
+  game->gesture.shape = &tutorialHexShape;
+  game->cars[0].x = trafficLaneX;
+  game->cars[0].z = mergeEndZ;
+  EnterGamePhase(game, GAME_PHASE_TUTORIAL);
 }
 
 static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
@@ -602,6 +625,10 @@ static void UpdateGame(GameState *game, f32 gameDt, f32 realDt) {
 
   switch (game->phase) {
   case GAME_PHASE_TITLE:
+    break;
+  case GAME_PHASE_TUTORIAL:
+    game->tutorialFailureAge =
+        fmaxf(game->tutorialFailureAge - realDt, 0.0f);
     break;
   case GAME_PHASE_APPROACH:
     car->z -= game->playerSpeed * gameDt;
@@ -896,6 +923,32 @@ static void DrawGame(Renderer *renderer, GameState *game, u32 highScore) {
                        RAYWHITE);
       DrawCenteredText(TextFormat("HIGH SCORE  %u", highScore), 520, 18,
                        (Color){238, 190, 72, 255});
+      DrawCenteredText("PRESS H TO PRACTICE", 555, 16, LIGHTGRAY);
+    }
+
+    if (game->phase == GAME_PHASE_TUTORIAL) {
+      const char *instruction = "PRESS OR TOUCH THE BRIGHT POINT";
+      if (game->tutorialFailureAge > 0.0f) {
+        instruction = "TRY AGAIN - KEEP HOLDING UNTIL BOTH ARE LIT";
+      } else if (game->gesture.state == HEX_GESTURE_DRAWING) {
+        if (game->gesture.nextCheckpoint == 0) {
+          instruction = "DRAG TO THE BRIGHT POINT";
+        } else if (game->gesture.nextCheckpoint == 1) {
+          instruction = "KEEP HOLDING AND DRAG TO THE NEXT POINT";
+        } else {
+          instruction = "RELEASE TO CAST";
+        }
+      }
+
+      DrawRectangle(0, 0, screenWidth, 155, Fade(BLACK, 0.72f));
+      DrawCenteredText("HOW TO PLAY", 24, 30,
+                       (Color){238, 190, 72, 255});
+      DrawCenteredText("BRIGHT POINT: YOUR NEXT TARGET", 70, 18, RAYWHITE);
+      DrawCenteredText("DIM POINT: COMES NEXT", 98, 18, LIGHTGRAY);
+      DrawWizardHand(renderer, &game->gesture);
+      DrawHexGesture(renderer, &game->gesture);
+      DrawRectangle(0, 610, screenWidth, 110, Fade(BLACK, 0.72f));
+      DrawCenteredText(instruction, 642, 20, RAYWHITE);
     }
 
     if (game->phase == GAME_PHASE_MERGING) {
@@ -914,7 +967,8 @@ static void DrawGame(Renderer *renderer, GameState *game, u32 highScore) {
                        (Color){238, 190, 72, 255});
       DrawCenteredText("PRESS R, CLICK, OR TAP TO RETRY", 455, 20, RAYWHITE);
       DrawCenteredText("PRESS T FOR TITLE", 490, 16, LIGHTGRAY);
-    } else if (game->phase != GAME_PHASE_TITLE) {
+    } else if (game->phase != GAME_PHASE_TITLE &&
+               game->phase != GAME_PHASE_TUTORIAL) {
       DrawText(TextFormat("SCORE  %u", game->carsPassed), 560, 20, 20,
                RAYWHITE);
     }
@@ -967,16 +1021,41 @@ i32 main(void) {
 
 void UpdateDrawFrame(void) {
   f32 realDt = Clamp(GetFrameTime(), 0.0f, 0.05f);
+  bool screenInputConsumed = false;
 
-  if (app.game.phase == GAME_PHASE_TITLE &&
+  if (app.game.phase == GAME_PHASE_TITLE && IsKeyPressed(KEY_H)) {
+    StartTutorial(&app.game);
+    screenInputConsumed = true;
+  } else if (app.game.phase == GAME_PHASE_TITLE &&
       (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE) ||
        IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) {
-    StartRun(&app.game);
+    if (app.tutorialCompleted) {
+      StartRun(&app.game);
+    } else {
+      StartTutorial(&app.game);
+    }
+    screenInputConsumed = true;
   } else if (app.game.phase == GAME_PHASE_LOST &&
-             (IsKeyPressed(KEY_R) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) {
+              (IsKeyPressed(KEY_R) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT))) {
     StartRun(&app.game);
+    screenInputConsumed = true;
   } else if (app.game.phase == GAME_PHASE_LOST && IsKeyPressed(KEY_T)) {
     InitGame(&app.game);
+    screenInputConsumed = true;
+  }
+
+  if (app.game.phase == GAME_PHASE_TUTORIAL && !screenInputConsumed) {
+    GestureResult result =
+        UpdateHexGesture(&app.game.gesture, GetMousePosition());
+
+    if (result == GESTURE_RESULT_SUCCESS) {
+      app.tutorialCompleted = true;
+      StartRun(&app.game);
+    } else if (result == GESTURE_RESULT_FAILURE) {
+      ResetGesture(&app.game.gesture);
+      app.game.gesture.anchorRevealAge = 1.0f;
+      app.game.tutorialFailureAge = 1.5f;
+    }
   }
 
   if (app.game.phase == GAME_PHASE_MERGING) {
