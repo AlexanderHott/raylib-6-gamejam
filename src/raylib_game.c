@@ -77,6 +77,28 @@ static const Vector2 trafficCarFrameAnchors[] = {
 #define HEX_CHECKPOINTS_MAX 32
 #define HEX_TRAIL_POINTS_MAX 1024
 
+static const f32 initialPlayerSpeed = 18.0f;
+static const f32 speedIncreasePerPass = 1.5f;
+static const f32 maximumPlayerSpeed = 33.0f;
+static const f32 trafficLaneX = 4.0f;
+static const f32 playerLaneX = 0.5f;
+static const f32 mergeTriggerZ = 30.0f;
+static const f32 mergeEndZ = 22.0f;
+static const f32 maximumMergeLaneProgress = 0.20f;
+static const f32 anchorStagger = 0.20f;
+static const f32 anchorRevealDuration = 0.50f;
+static const f32 initialDrawingTime = 4.0f;
+static const f32 drawingTimeReductionPerPass = 0.25f;
+static const f32 minimumDrawingTime = 2.0f;
+static const f32 slowMotionScale = 0.20f;
+
+typedef enum GamePhase {
+  GAME_PHASE_APPROACH,
+  GAME_PHASE_MERGING,
+  GAME_PHASE_PASSING,
+  GAME_PHASE_LOST,
+} GamePhase;
+
 typedef enum HexGestureState {
   HEX_GESTURE_IDLE,
   HEX_GESTURE_DRAWING,
@@ -84,11 +106,23 @@ typedef enum HexGestureState {
   HEX_GESTURE_FAILURE,
 } HexGestureState;
 
+typedef enum GestureResult {
+  GESTURE_RESULT_NONE,
+  GESTURE_RESULT_SUCCESS,
+  GESTURE_RESULT_FAILURE,
+} GestureResult;
+
 typedef enum GestureAnchorState {
   GESTURE_ANCHOR_OFF,
   GESTURE_ANCHOR_ON,
   GESTURE_ANCHOR_NEXT,
 } GestureAnchorState;
+
+typedef struct GestureAnchorGroup {
+  Vector2 position;
+  bool containsNext;
+  bool containsFuture;
+} GestureAnchorGroup;
 
 typedef struct HexShape {
   const char *name;
@@ -136,6 +170,79 @@ static const HexShape hexShapes[] = {
                      {0.50f, 0.04f},
                      {0.50f, 0.96f}},
      .checkpointCount = 6},
+    {.name = "pentagram",
+     .checkpoints = {{0.50f, 0.04f},
+                     {0.79f, 0.94f},
+                     {0.04f, 0.38f},
+                     {0.96f, 0.38f},
+                     {0.21f, 0.94f},
+                     {0.50f, 0.04f}},
+     .checkpointCount = 6},
+    {.name = "spiral",
+     .checkpoints = {{0.93f, 0.50f},
+                     {0.88f, 0.72f},
+                     {0.72f, 0.88f},
+                     {0.50f, 0.94f},
+                     {0.27f, 0.88f},
+                     {0.11f, 0.72f},
+                     {0.05f, 0.50f},
+                     {0.11f, 0.28f},
+                     {0.27f, 0.12f},
+                     {0.50f, 0.07f},
+                     {0.70f, 0.14f},
+                     {0.83f, 0.30f},
+                     {0.84f, 0.50f},
+                     {0.75f, 0.66f},
+                     {0.59f, 0.75f},
+                     {0.42f, 0.72f},
+                     {0.32f, 0.60f},
+                     {0.32f, 0.46f},
+                     {0.40f, 0.37f},
+                     {0.51f, 0.37f},
+                     {0.57f, 0.44f},
+                     {0.55f, 0.51f}},
+     .checkpointCount = 22},
+    {.name = "eye",
+     .checkpoints = {{0.05f, 0.50f},
+                     {0.25f, 0.25f},
+                     {0.50f, 0.16f},
+                     {0.75f, 0.25f},
+                     {0.95f, 0.50f},
+                     {0.75f, 0.75f},
+                     {0.50f, 0.84f},
+                     {0.25f, 0.75f},
+                     {0.05f, 0.50f},
+                     {0.50f, 0.50f},
+                     {0.95f, 0.50f}},
+     .checkpointCount = 11},
+    {.name = "merge",
+     .checkpoints = {{0.18f, 0.08f},
+                     {0.18f, 0.40f},
+                     {0.50f, 0.62f},
+                     {0.50f, 0.94f},
+                     {0.50f, 0.62f},
+                     {0.82f, 0.40f},
+                     {0.82f, 0.08f}},
+     .checkpointCount = 7},
+    {.name = "warning",
+     .checkpoints = {{0.50f, 0.06f},
+                     {0.94f, 0.88f},
+                     {0.06f, 0.88f},
+                     {0.50f, 0.06f},
+                     {0.50f, 0.62f},
+                     {0.50f, 0.75f}},
+     .checkpointCount = 6},
+    {.name = "figure eight",
+     .checkpoints = {{0.50f, 0.50f},
+                     {0.28f, 0.18f},
+                     {0.50f, 0.06f},
+                     {0.72f, 0.18f},
+                     {0.50f, 0.50f},
+                     {0.28f, 0.82f},
+                     {0.50f, 0.94f},
+                     {0.72f, 0.82f},
+                     {0.50f, 0.50f}},
+     .checkpointCount = 9},
     {.name = "check engine",
      .checkpoints =
          {{0.4700f, 0.33015f}, {0.6000f, 0.3300f}, {0.6005f, 0.4125f},
@@ -185,6 +292,7 @@ typedef struct TrafficCar {
   f32 height;
   f32 length;
   Color color;
+  f32 targetX;
 } TrafficCar;
 
 typedef struct GameState {
@@ -193,6 +301,13 @@ typedef struct GameState {
 
   HexGesture gesture;
   u32 shapeIndex;
+
+  GamePhase phase;
+  u32 carsPassed;
+  f32 phaseAge;
+  f32 encounterDuration;
+  f32 encounterTimeRemaining;
+  f32 timeScale;
 
   f32 roadScroll;
   f32 playerSpeed;
@@ -287,9 +402,8 @@ static void BeginHexGesture(HexGesture *gesture, Vector2 cursor) {
   AdvanceHexCheckpoints(gesture, cursor, cursor);
 }
 
-static bool UpdateHexGesture(HexGesture *gesture, Vector2 cursor, f32 dt) {
+static GestureResult UpdateHexGesture(HexGesture *gesture, Vector2 cursor) {
   const f32 sampleDistance = 4.0f;
-  const f32 resultDuration = 0.75f;
 
   if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
     BeginHexGesture(gesture, cursor);
@@ -307,32 +421,76 @@ static bool UpdateHexGesture(HexGesture *gesture, Vector2 cursor, f32 dt) {
 
   if (gesture->state == HEX_GESTURE_DRAWING &&
       IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-    gesture->state = gesture->nextCheckpoint == gesture->shape->checkpointCount
-                         ? HEX_GESTURE_SUCCESS
-                         : HEX_GESTURE_FAILURE;
+    bool completed = gesture->nextCheckpoint == gesture->shape->checkpointCount;
+    gesture->state =
+        completed ? HEX_GESTURE_SUCCESS : HEX_GESTURE_FAILURE;
     gesture->resultAge = 0.0f;
+    return completed ? GESTURE_RESULT_SUCCESS : GESTURE_RESULT_FAILURE;
   }
 
-  if (gesture->state == HEX_GESTURE_SUCCESS ||
-      gesture->state == HEX_GESTURE_FAILURE) {
-    gesture->resultAge += dt;
-    if (gesture->resultAge >= resultDuration) {
-      bool completed = gesture->state == HEX_GESTURE_SUCCESS;
-      gesture->state = HEX_GESTURE_IDLE;
-      gesture->trailCount = 0;
-      gesture->nextCheckpoint = 0;
-      return completed;
-    }
+  return GESTURE_RESULT_NONE;
+}
+
+static void ResetGesture(HexGesture *gesture) {
+  gesture->state = HEX_GESTURE_IDLE;
+  gesture->trailCount = 0;
+  gesture->nextCheckpoint = 0;
+  gesture->resultAge = 0.0f;
+  gesture->anchorRevealAge = 0.0f;
+}
+
+static f32 GetMergeTimeLimit(const GameState *game) {
+  f32 revealTime = anchorRevealDuration;
+  if (game->gesture.shape->checkpointCount > 1) {
+    revealTime +=
+        (f32)(game->gesture.shape->checkpointCount - 1) * anchorStagger;
   }
 
-  return false;
+  f32 drawingTime =
+      fmaxf(initialDrawingTime -
+                (f32)game->carsPassed * drawingTimeReductionPerPass,
+            minimumDrawingTime);
+  return revealTime + drawingTime;
+}
+
+static void EnterGamePhase(GameState *game, GamePhase phase) {
+  game->phase = phase;
+  game->phaseAge = 0.0f;
+
+  switch (phase) {
+  case GAME_PHASE_APPROACH:
+    game->timeScale = 1.0f;
+    break;
+  case GAME_PHASE_MERGING:
+    game->timeScale = slowMotionScale;
+    game->encounterDuration = GetMergeTimeLimit(game);
+    game->encounterTimeRemaining = game->encounterDuration;
+    ResetGesture(&game->gesture);
+    break;
+  case GAME_PHASE_PASSING:
+    game->timeScale = 1.0f;
+    game->cars[0].targetX = trafficLaneX + 2.0f;
+    break;
+  case GAME_PHASE_LOST:
+    game->timeScale = 0.0f;
+    break;
+  }
+}
+
+static void StartEncounter(GameState *game) {
+  TrafficCar *car = &game->cars[0];
+  car->x = trafficLaneX;
+  car->z = 90.0f;
+  car->targetX = trafficLaneX;
+  ResetGesture(&game->gesture);
+  EnterGamePhase(game, GAME_PHASE_APPROACH);
 }
 
 static void InitGame(GameState *game) {
   memset(game, 0, sizeof(*game));
 
   game->roadScroll = 0.0f;
-  game->playerSpeed = 0.0f;
+  game->playerSpeed = initialPlayerSpeed;
   game->roadBottomY = 720.0f;
   game->leftRoadLineX = -3.75f;
   game->centerRoadLineX = 3.75f;
@@ -342,13 +500,15 @@ static void InitGame(GameState *game) {
   game->trafficCarOffsetY = 0.0f;
 
   game->carCount = 1;
-  game->cars[0] = (TrafficCar){4.0f, 45.0f, 1.8f, 1.3f, 4.0f, RED};
+  game->cars[0] =
+      (TrafficCar){trafficLaneX, 90.0f, 1.8f, 1.3f, 4.0f, RED, trafficLaneX};
   // game->cars[1] = (TrafficCar){3.0f, 85.0f, 1.8f, 1.3f, 4.0f, BLUE};
   // game->cars[2] = (TrafficCar){3.0f, 130.0f, 1.8f, 1.3f, 4.0f, GREEN};
 
   game->shapeIndex = 0;
   game->gesture.shape = &hexShapes[game->shapeIndex];
   game->gesture.bounds = (Rectangle){0.0f, 0.0f, 720.0f, 720.0f};
+  StartEncounter(game);
 }
 
 static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
@@ -396,19 +556,44 @@ static void ShutdownRenderer(Renderer *renderer) {
   memset(renderer, 0, sizeof(*renderer));
 }
 
-static void UpdateGame(GameState *game, f32 dt) {
-  game->gesture.anchorRevealAge += dt;
-  game->roadScroll -= game->playerSpeed * dt;
+static void UpdateGame(GameState *game, f32 gameDt, f32 realDt) {
+  TrafficCar *car = &game->cars[0];
+  game->phaseAge += realDt;
+  game->roadScroll -= game->playerSpeed * gameDt;
   if (game->roadScroll < 0.0f) {
     game->roadScroll += 180.0f;
   }
 
-  for (i32 i = 0; i < game->carCount; i++) {
-    game->cars[i].z -= game->playerSpeed * dt;
-
-    if (game->cars[i].z < -4.5f) {
-      game->cars[i].z = 150.0f + (f32)i * 35.0f;
+  switch (game->phase) {
+  case GAME_PHASE_APPROACH:
+    car->z -= game->playerSpeed * gameDt;
+    if (car->z <= mergeTriggerZ) {
+      car->targetX = playerLaneX;
+      EnterGamePhase(game, GAME_PHASE_MERGING);
     }
+    break;
+  case GAME_PHASE_MERGING:
+    game->gesture.anchorRevealAge += realDt;
+    game->encounterTimeRemaining -= realDt;
+    f32 challengeProgress =
+        Clamp(1.0f - game->encounterTimeRemaining / game->encounterDuration,
+              0.0f, 1.0f);
+    car->x = Lerp(trafficLaneX, playerLaneX,
+                  challengeProgress * maximumMergeLaneProgress);
+    car->z = Lerp(mergeTriggerZ, mergeEndZ, challengeProgress);
+    if (game->encounterTimeRemaining <= 0.0f) {
+      EnterGamePhase(game, GAME_PHASE_LOST);
+    }
+    break;
+  case GAME_PHASE_PASSING:
+    car->x = Lerp(car->x, car->targetX, 4.0f * gameDt);
+    car->z -= game->playerSpeed * gameDt;
+    if (car->z < -4.5f) {
+      StartEncounter(game);
+    }
+    break;
+  case GAME_PHASE_LOST:
+    break;
   }
 }
 
@@ -444,26 +629,75 @@ static const char *GetHexGestureStateName(HexGestureState state) {
   return "unknown";
 }
 
-static GestureAnchorState GetGestureAnchorState(const HexGesture *gesture,
-                                                u32 index) {
-  if (index < gesture->nextCheckpoint) {
-    return GESTURE_ANCHOR_ON;
+static u32 FindGestureAnchorGroup(
+    const GestureAnchorGroup groups[HEX_CHECKPOINTS_MAX], u32 groupCount,
+    Vector2 position) {
+  const f32 groupingDistance = 24.0f;
+
+  for (u32 i = 0; i < groupCount; i++) {
+    if (Vector2Distance(groups[i].position, position) <= groupingDistance) {
+      return i;
+    }
   }
-  if (index == gesture->nextCheckpoint) {
+
+  return groupCount;
+}
+
+static u32 BuildGestureAnchorGroups(
+    const HexGesture *gesture,
+    GestureAnchorGroup groups[HEX_CHECKPOINTS_MAX]) {
+  u32 groupCount = 0;
+
+  for (u32 checkpointIndex = 0;
+       checkpointIndex < gesture->shape->checkpointCount; checkpointIndex++) {
+    Vector2 position = GetCheckpointPosition(gesture, checkpointIndex);
+    u32 groupIndex =
+        FindGestureAnchorGroup(groups, groupCount, position);
+
+    if (groupIndex == groupCount) {
+      groups[groupCount++] = (GestureAnchorGroup){.position = position};
+    }
+
+    GestureAnchorGroup *group = &groups[groupIndex];
+    group->containsNext |= checkpointIndex == gesture->nextCheckpoint;
+    group->containsFuture |= checkpointIndex > gesture->nextCheckpoint;
+  }
+
+  return groupCount;
+}
+
+static GestureAnchorState
+GetGestureAnchorGroupState(const GestureAnchorGroup *group) {
+  if (group->containsNext) {
     return GESTURE_ANCHOR_NEXT;
   }
-  return GESTURE_ANCHOR_OFF;
+  if (group->containsFuture) {
+    return GESTURE_ANCHOR_OFF;
+  }
+  return GESTURE_ANCHOR_ON;
+}
+
+static Vector2
+GetGestureAnchorGroupPosition(const HexGesture *gesture,
+                              const GestureAnchorGroup *group) {
+  if (group->containsNext &&
+      gesture->nextCheckpoint < gesture->shape->checkpointCount) {
+    return GetCheckpointPosition(gesture, gesture->nextCheckpoint);
+  }
+  return group->position;
 }
 
 static void DrawGestureAnchor(Texture2D texture, Vector2 position,
                               GestureAnchorState state, f32 revealProgress) {
+  const f32 drawWidth = 48.0f;
   const f32 frameWidth = (f32)texture.width / 3.0f;
   const f32 frameHeight = (f32)texture.height;
+  const f32 drawHeight = drawWidth * frameHeight / frameWidth;
   f32 eased = 1.0f - powf(1.0f - revealProgress, 3.0f);
   f32 scale = 0.65f + 0.35f * eased;
   Rectangle source = {(f32)state * frameWidth, 0.0f, frameWidth, frameHeight};
-  Rectangle destination = {position.x, position.y, frameWidth * scale,
-                           frameHeight * scale};
+  Rectangle destination = {position.x, position.y, drawWidth * scale,
+                           drawHeight * scale};
   Vector2 origin = {destination.width * 0.5f, destination.height * 0.5f};
 
   DrawTexturePro(texture, source, destination, origin, 0.0f,
@@ -472,8 +706,8 @@ static void DrawGestureAnchor(Texture2D texture, Vector2 position,
 
 static void DrawHexGesture(const Renderer *renderer,
                            const HexGesture *gesture) {
-  const f32 anchorStagger = 0.200f;
-  const f32 anchorRevealDuration = 0.500f;
+  GestureAnchorGroup groups[HEX_CHECKPOINTS_MAX] = {0};
+  u32 groupCount = BuildGestureAnchorGroups(gesture, groups);
   Color trailColor = (Color){190, 100, 255, 255};
   if (gesture->state == HEX_GESTURE_SUCCESS) {
     trailColor = (Color){80, 255, 180, 255};
@@ -481,15 +715,17 @@ static void DrawHexGesture(const Renderer *renderer,
     trailColor = (Color){255, 60, 80, 255};
   }
 
-  for (u32 i = 0; i < gesture->shape->checkpointCount; i++) {
-    f32 delay = (f32)i * anchorStagger;
+  for (u32 groupIndex = 0; groupIndex < groupCount; groupIndex++) {
+    GestureAnchorGroup *group = &groups[groupIndex];
+    f32 delay = (f32)groupIndex * anchorStagger;
     f32 progress =
         Clamp((gesture->anchorRevealAge - delay) / anchorRevealDuration, 0.0f,
               1.0f);
     if (progress > 0.0f) {
-      DrawGestureAnchor(renderer->gestureAnchor,
-                        GetCheckpointPosition(gesture, i),
-                        GetGestureAnchorState(gesture, i), progress);
+      DrawGestureAnchor(
+          renderer->gestureAnchor,
+          GetGestureAnchorGroupPosition(gesture, group),
+          GetGestureAnchorGroupState(group), progress);
     }
   }
 
@@ -592,10 +828,19 @@ static void DrawGame(Renderer *renderer, GameState *game) {
     DrawTrafficCars(renderer, game);
 
     DrawTexture(renderer->carInterior, 0, 0, WHITE);
-    DrawWizardHand(renderer, &game->gesture);
-    DrawHexGesture(renderer, &game->gesture);
+    if (game->phase == GAME_PHASE_MERGING) {
+      DrawWizardHand(renderer, &game->gesture);
+      DrawHexGesture(renderer, &game->gesture);
+      DrawText(TextFormat("STOP THE MERGE: %.1f",
+                          game->encounterTimeRemaining),
+               20, 20, 24, RAYWHITE);
+    }
 
-    DrawText("Passing slower cars in the right lane", 20, 20, 20, RAYWHITE);
+    if (game->phase == GAME_PHASE_LOST) {
+      DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.65f));
+      DrawText("YOU LOST", 270, 320, 36, RED);
+      DrawText("Press R to restart", 260, 370, 20, RAYWHITE);
+    }
   }
   EndTextureMode();
 
@@ -645,14 +890,31 @@ i32 main(void) {
 }
 
 void UpdateDrawFrame(void) {
-  f32 dt = GetFrameTime();
+  f32 realDt = Clamp(GetFrameTime(), 0.0f, 0.05f);
 
-  if (UpdateHexGesture(&app.game.gesture, GetMousePosition(), dt)) {
-    app.game.shapeIndex = (app.game.shapeIndex + 1) % HEX_SHAPE_COUNT;
-    app.game.gesture.shape = &hexShapes[app.game.shapeIndex];
-    app.game.gesture.anchorRevealAge = 0.0f;
+  if (app.game.phase == GAME_PHASE_LOST && IsKeyPressed(KEY_R)) {
+    InitGame(&app.game);
   }
-  UpdateGame(&app.game, dt);
+
+  if (app.game.phase == GAME_PHASE_MERGING) {
+    GestureResult result =
+        UpdateHexGesture(&app.game.gesture, GetMousePosition());
+
+    if (result == GESTURE_RESULT_SUCCESS) {
+      app.game.carsPassed++;
+      app.game.playerSpeed =
+          fminf(initialPlayerSpeed +
+                    (f32)app.game.carsPassed * speedIncreasePerPass,
+                maximumPlayerSpeed);
+      app.game.shapeIndex = (app.game.shapeIndex + 1) % HEX_SHAPE_COUNT;
+      app.game.gesture.shape = &hexShapes[app.game.shapeIndex];
+      EnterGamePhase(&app.game, GAME_PHASE_PASSING);
+    } else if (result == GESTURE_RESULT_FAILURE) {
+      EnterGamePhase(&app.game, GAME_PHASE_LOST);
+    }
+  }
+
+  UpdateGame(&app.game, realDt * app.game.timeScale, realDt);
   DrawGame(&app.renderer, &app.game);
 
   app.frameCounter++;
