@@ -180,6 +180,7 @@ typedef struct Renderer {
   Texture2D background;
   Texture2D trafficCar;
   Texture2D carInterior;
+  Texture2D wizardHand;
 
   u32 screenWidth;
   u32 screenHeight;
@@ -310,7 +311,7 @@ static void InitGame(GameState *game) {
 
   game->shapeIndex = 0;
   game->gesture.shape = &hexShapes[game->shapeIndex];
-  game->gesture.bounds = (Rectangle){190.0f, 190.0f, 340.0f, 340.0f};
+  game->gesture.bounds = (Rectangle){0.0f, 0.0f, 720.0f, 720.0f};
 }
 
 static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
@@ -338,9 +339,15 @@ static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
   renderer->carInterior = LoadTexture("resources/car-interior.png");
   ASSERT(IsTextureValid(renderer->carInterior),
          "failed to load car interior texture");
+
+  renderer->wizardHand = LoadTexture("resources/wizard-hand.png");
+  ASSERT(IsTextureValid(renderer->wizardHand),
+         "failed to load wizard hand texture");
 }
 
 static void ShutdownRenderer(Renderer *renderer) {
+  UnloadTexture(renderer->wizardHand);
+  UnloadTexture(renderer->carInterior);
   UnloadTexture(renderer->trafficCar);
   UnloadTexture(renderer->background);
   UnloadRenderTexture(renderer->target);
@@ -422,17 +429,17 @@ static void DrawHexGesture(const HexGesture *gesture) {
 }
 
 static void DrawHexGestureDebugUi(const HexGesture *gesture) {
-  DrawRectangle(12, 54, 250, 112, Fade(BLACK, 0.72f));
-  DrawRectangleLines(12, 54, 250, 112, Fade(RAYWHITE, 0.55f));
-  DrawText("GESTURE DEBUG", 24, 64, 18, RAYWHITE);
-  DrawText(TextFormat("shape: %s", gesture->shape->name), 24, 88, 16,
+  DrawRectangle(12, 596, 250, 112, Fade(BLACK, 0.72f));
+  DrawRectangleLines(12, 596, 250, 112, Fade(RAYWHITE, 0.55f));
+  DrawText("GESTURE DEBUG", 24, 606, 18, RAYWHITE);
+  DrawText(TextFormat("shape: %s", gesture->shape->name), 24, 630, 16,
            LIGHTGRAY);
   DrawText(TextFormat("state: %s", GetHexGestureStateName(gesture->state)), 24,
-           108, 16, LIGHTGRAY);
+           650, 16, LIGHTGRAY);
   DrawText(TextFormat("checkpoint: %u / %u", gesture->nextCheckpoint,
                       gesture->shape->checkpointCount),
-           24, 128, 16, LIGHTGRAY);
-  DrawText(TextFormat("trail samples: %u", gesture->trailCount), 24, 148, 16,
+           24, 670, 16, LIGHTGRAY);
+  DrawText(TextFormat("trail samples: %u", gesture->trailCount), 24, 690, 16,
            LIGHTGRAY);
 }
 
@@ -502,6 +509,17 @@ static void DrawTrafficCars(Renderer *renderer, GameState *game) {
   }
 }
 
+static void DrawWizardHand(const Renderer *renderer,
+                           const HexGesture *gesture) {
+  if (gesture->state != HEX_GESTURE_DRAWING) {
+    return;
+  }
+
+  Vector2 position =
+      Vector2Subtract(GetMousePosition(), (Vector2){93.0f, 97.0f});
+  DrawTextureV(renderer->wizardHand, position, WHITE);
+}
+
 static void DrawGame(Renderer *renderer, GameState *game) {
 
   BeginTextureMode(renderer->target);
@@ -512,7 +530,7 @@ static void DrawGame(Renderer *renderer, GameState *game) {
     DrawTrafficCars(renderer, game);
 
     DrawTexture(renderer->carInterior, 0, 0, WHITE);
-
+    DrawWizardHand(renderer, &game->gesture);
     DrawHexGesture(&game->gesture);
 
     DrawText("Passing slower cars in the right lane", 20, 20, 20, RAYWHITE);
