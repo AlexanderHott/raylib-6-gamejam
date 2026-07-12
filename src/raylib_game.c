@@ -59,7 +59,15 @@ STATIC_ASSERT(sizeof(f64) == 8, f32_is_not_8_bytes);
 static const u32 screenWidth = 720;
 static const u32 screenHeight = 720;
 
-static const f32 trafficCarScale = 3.0f;
+static const u32 trafficCarFrameColumns = 4;
+static const u32 trafficCarFrameCount = 13;
+static const Vector2 trafficCarFrameAnchors[] = {
+    {575.0f, 422.0f}, {558.5f, 420.0f}, {536.0f, 415.0f},
+    {521.0f, 414.0f}, {509.0f, 411.0f}, {482.5f, 399.0f},
+    {470.0f, 393.0f}, {460.0f, 392.0f}, {440.0f, 391.0f},
+    {425.5f, 387.0f}, {384.5f, 381.0f}, {363.5f, 375.0f},
+    {346.5f, 375.0f},
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Game
@@ -67,7 +75,7 @@ static const f32 trafficCarScale = 3.0f;
 
 #define TRAFFIC_CARS_MAX 16
 #define HEX_CHECKPOINTS_MAX 32
-#define HEX_TRAIL_POINTS_MAX 256
+#define HEX_TRAIL_POINTS_MAX 1024
 
 typedef enum HexGestureState {
   HEX_GESTURE_IDLE,
@@ -122,6 +130,20 @@ static const HexShape hexShapes[] = {
                      {0.50f, 0.04f},
                      {0.50f, 0.96f}},
      .checkpointCount = 6},
+    {.name = "check engine",
+     .checkpoints =
+         {{0.4700f, 0.33015f}, {0.6000f, 0.3300f}, {0.6005f, 0.4125f},
+          {0.7130f, 0.4130f},  {0.7130f, 0.5070f}, {0.7840f, 0.5070f},
+          {0.7844f, 0.4420f},  {0.8544f, 0.4420f}, {0.8544f, 0.7000f},
+          {0.7810f, 0.7000f},  {0.7810f, 0.6346f}, {0.7100f, 0.6340f},
+          {0.7100f, 0.7497f},  {0.4760f, 0.7500f}, {0.3490f, 0.6690f},
+          {0.2160f, 0.6690f},  {0.2140f, 0.5440f}, {0.1500f, 0.5437f},
+          {0.1360f, 0.6740f},  {0.1350f, 0.3930f}, {0.1506f, 0.5100f},
+          {0.2130f, 0.5100f},  {0.2160f, 0.3870f}, {0.2960f, 0.3854f},
+          {0.2960f, 0.3330f},  {0.4323f, 0.3300f}, {0.4327f, 0.2650f},
+          {0.3210f, 0.2433f},  {0.5840f, 0.2430f}, {0.4703f, 0.2652f},
+          {0.4699f, 0.3301f}},
+     .checkpointCount = 31},
 };
 
 #define HEX_SHAPE_COUNT (sizeof(hexShapes) / sizeof(hexShapes[0]))
@@ -171,6 +193,10 @@ typedef struct GameState {
   f32 leftRoadLineX;
   f32 centerRoadLineX;
   f32 rightRoadLineX;
+
+  f32 trafficCarScale;
+  f32 trafficCarOffsetX;
+  f32 trafficCarOffsetY;
 } GameState;
 
 typedef struct Renderer {
@@ -303,6 +329,9 @@ static void InitGame(GameState *game) {
   game->leftRoadLineX = -3.75f;
   game->centerRoadLineX = 3.75f;
   game->rightRoadLineX = 13.5f;
+  game->trafficCarScale = 10.0f;
+  game->trafficCarOffsetX = 1.0f;
+  game->trafficCarOffsetY = 0.0f;
 
   game->carCount = 1;
   game->cars[0] = (TrafficCar){4.0f, 45.0f, 1.8f, 1.3f, 4.0f, RED};
@@ -332,7 +361,7 @@ static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
   ASSERT(IsTextureValid(renderer->background),
          "failed to load background texture");
 
-  renderer->trafficCar = LoadTexture("resources/car.png");
+  renderer->trafficCar = LoadTexture("resources/traffic-car.png");
   ASSERT(IsTextureValid(renderer->trafficCar),
          "failed to load traffic car texture");
 
@@ -448,36 +477,25 @@ static void DrawTrafficCars(Renderer *renderer, GameState *game) {
   const Camera25D *cam = &renderer->camera;
   const Texture2D texture = renderer->trafficCar;
 
-  const f32 frameWidth = (f32)texture.width / 2.0f;
-  const f32 frameHeight = (f32)texture.height / 2.0f;
+  const f32 frameWidth = (f32)texture.width / (f32)trafficCarFrameColumns;
+  const f32 frameHeight = frameWidth;
   const TrafficCar *car = &game->cars[0];
 
   if (car->z > 1.0f) {
 
     f32 viewAngle = atan2f(car->x, car->z);
 
-    i32 frameColumn;
-    i32 frameRow;
-
-    // ASSERT(viewAngle >= 0.0f, "view angle less than zero");
-    if (viewAngle < -0.0f) {
-      // Shouldn't happen
-      LOG("warn: negative view angle");
-      frameColumn = 0;
-      frameRow = 1;
-    } else if (viewAngle < 0.10f) {
-      frameColumn = 0;
-      frameRow = 1;
-    } else if (viewAngle < 0.30f) {
-      frameColumn = 0;
-      frameRow = 0;
-    } else if (viewAngle < 0.92f) {
-      frameColumn = 1;
-      frameRow = 1;
-    } else {
-      frameColumn = 1;
-      frameRow = 0;
+    // The sprite sheet only contains views from the car's right side.
+    if (viewAngle < 0.0f) {
+      return;
     }
+
+    f32 frameProgress = Clamp(viewAngle / (PI * 0.5f), 0.0f, 1.0f);
+    u32 frameIndex = (trafficCarFrameCount - 1) -
+                     (u32)roundf(frameProgress *
+                                 (f32)(trafficCarFrameCount - 1));
+    u32 frameColumn = frameIndex % trafficCarFrameColumns;
+    u32 frameRow = frameIndex / trafficCarFrameColumns;
 
     Rectangle source = {
         .x = (f32)frameColumn * frameWidth,
@@ -490,19 +508,20 @@ static void DrawTrafficCars(Renderer *renderer, GameState *game) {
         ProjectPoint(cam, (WorldVector3){car->x, 0.0f, car->z});
 
     f32 scale = cam->focalLength / car->z;
-    f32 drawWidth = car->width * scale * trafficCarScale;
-    f32 drawHeight = car->height * scale * trafficCarScale;
+    f32 drawWidth = car->width * scale * game->trafficCarScale;
+    f32 drawHeight = car->height * scale * game->trafficCarScale;
 
     Rectangle destination = {
-        .x = groundPosition.x,
-        .y = groundPosition.y,
+        .x = groundPosition.x + game->trafficCarOffsetX * scale,
+        .y = groundPosition.y + game->trafficCarOffsetY * scale,
         .width = drawWidth,
         .height = drawHeight,
     };
 
+    Vector2 frameAnchor = trafficCarFrameAnchors[frameIndex];
     Vector2 origin = {
-        .x = drawWidth * 0.5f,
-        .y = drawHeight,
+        .x = drawWidth * frameAnchor.x / frameWidth,
+        .y = drawHeight * frameAnchor.y / frameHeight,
     };
 
     DrawTexturePro(texture, source, destination, origin, 0.0f, WHITE);
