@@ -61,6 +61,12 @@ static const u32 screenHeight = 720;
 
 static const u32 trafficCarFrameColumns = 4;
 static const u32 trafficCarFrameCount = 13;
+static const u32 explosionFrameColumns = 3;
+static const u32 explosionFrameCount = 9;
+static const f32 explosionFrameDuration = 0.05f;
+static const f32 explosionDuration =
+    (f32)explosionFrameCount * explosionFrameDuration;
+static const Vector2 explosionOffsetAtMerge = {-55.0f, 62.0f};
 static const Vector2 trafficCarFrameAnchors[] = {
     {575.0f, 422.0f}, {558.5f, 420.0f}, {536.0f, 415.0f}, {521.0f, 414.0f},
     {509.0f, 411.0f}, {482.5f, 399.0f}, {470.0f, 393.0f}, {460.0f, 392.0f},
@@ -295,9 +301,11 @@ typedef struct GameState {
   GamePhase phase;
   u32 carsPassed;
   f32 phaseAge;
+  f32 explosionAge;
   f32 encounterDuration;
   f32 encounterTimeRemaining;
   f32 timeScale;
+  bool trafficCarVisible;
 
   f32 roadScroll;
   f32 playerSpeed;
@@ -317,6 +325,7 @@ typedef struct Renderer {
 
   Texture2D background;
   Texture2D trafficCar;
+  Texture2D explosion;
   Texture2D carInterior;
   Texture2D wizardHand;
   Texture2D gestureAnchor;
@@ -484,6 +493,8 @@ static void EnterGamePhase(GameState *game, GamePhase phase) {
 
 static void StartEncounter(GameState *game) {
   TrafficCar *car = &game->cars[0];
+  game->explosionAge = -1.0f;
+  game->trafficCarVisible = true;
   car->x = trafficLaneX;
   car->z = 90.0f;
   car->targetX = trafficLaneX;
@@ -494,6 +505,8 @@ static void StartEncounter(GameState *game) {
 static void InitGame(GameState *game) {
   memset(game, 0, sizeof(*game));
 
+  game->explosionAge = -1.0f;
+  game->trafficCarVisible = true;
   game->roadScroll = 0.0f;
   game->playerSpeed = initialPlayerSpeed;
   game->roadBottomY = 720.0f;
@@ -542,6 +555,10 @@ static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
   ASSERT(IsTextureValid(renderer->trafficCar),
          "failed to load traffic car texture");
 
+  renderer->explosion = LoadTexture("resources/explosion.png");
+  ASSERT(IsTextureValid(renderer->explosion),
+         "failed to load explosion texture");
+
   renderer->carInterior = LoadTexture("resources/car-interior.png");
   ASSERT(IsTextureValid(renderer->carInterior),
          "failed to load car interior texture");
@@ -559,6 +576,7 @@ static void ShutdownRenderer(Renderer *renderer) {
   UnloadTexture(renderer->gestureAnchor);
   UnloadTexture(renderer->wizardHand);
   UnloadTexture(renderer->carInterior);
+  UnloadTexture(renderer->explosion);
   UnloadTexture(renderer->trafficCar);
   UnloadTexture(renderer->background);
   UnloadRenderTexture(renderer->target);
@@ -568,6 +586,15 @@ static void ShutdownRenderer(Renderer *renderer) {
 static void UpdateGame(GameState *game, f32 gameDt, f32 realDt) {
   TrafficCar *car = &game->cars[0];
   game->phaseAge += realDt;
+  if (game->explosionAge >= 0.0f) {
+    game->explosionAge += realDt;
+    if (game->explosionAge >= explosionDuration) {
+      game->explosionAge = -1.0f;
+    } else if (game->explosionAge >=
+               (f32)(explosionFrameCount - 1) * explosionFrameDuration) {
+      game->trafficCarVisible = false;
+    }
+  }
   game->roadScroll -= game->playerSpeed * gameDt;
   if (game->roadScroll < 0.0f) {
     game->roadScroll += 180.0f;
@@ -731,6 +758,10 @@ static void DrawHexGesture(const Renderer *renderer,
 
 static void DrawTrafficCars(Renderer *renderer, GameState *game) {
 
+  if (!game->trafficCarVisible) {
+    return;
+  }
+
   const Camera25D *cam = &renderer->camera;
   const Texture2D texture = renderer->trafficCar;
 
@@ -784,6 +815,51 @@ static void DrawTrafficCars(Renderer *renderer, GameState *game) {
   }
 }
 
+static void DrawExplosion(const Renderer *renderer, const GameState *game) {
+  if (game->explosionAge < 0.0f) {
+    return;
+  }
+
+  const TrafficCar *car = &game->cars[0];
+  if (car->z <= 1.0f) {
+    return;
+  }
+
+  u32 frameIndex = (u32)(game->explosionAge / explosionFrameDuration);
+  if (frameIndex >= explosionFrameCount) {
+    frameIndex = explosionFrameCount - 1;
+  }
+
+  const Texture2D texture = renderer->explosion;
+  const f32 frameWidth = (f32)texture.width / (f32)explosionFrameColumns;
+  const f32 frameHeight = frameWidth;
+  Rectangle source = {
+      .x = (f32)(frameIndex % explosionFrameColumns) * frameWidth,
+      .y = (f32)(frameIndex / explosionFrameColumns) * frameHeight,
+      .width = frameWidth,
+      .height = frameHeight,
+  };
+
+  Vector2 groundPosition =
+      ProjectPoint(&renderer->camera, (WorldVector3){car->x, 0.0f, car->z});
+  f32 scale = renderer->camera.focalLength / car->z;
+  f32 carWidth = car->width * scale * game->trafficCarScale;
+  f32 carHeight = car->height * scale * game->trafficCarScale;
+  f32 explosionSize = carWidth * 1.5f;
+  f32 offsetScale = mergeEndZ / car->z;
+  Rectangle destination = {
+      .x = groundPosition.x + game->trafficCarOffsetX * scale +
+           explosionOffsetAtMerge.x * offsetScale,
+      .y = groundPosition.y + game->trafficCarOffsetY * scale -
+           carHeight * 0.5f + explosionOffsetAtMerge.y * offsetScale,
+      .width = explosionSize,
+      .height = explosionSize,
+  };
+  Vector2 origin = {explosionSize * 0.5f, explosionSize * 0.5f};
+
+  DrawTexturePro(texture, source, destination, origin, 0.0f, WHITE);
+}
+
 static void DrawWizardHand(const Renderer *renderer,
                            const HexGesture *gesture) {
   if (gesture->state != HEX_GESTURE_DRAWING) {
@@ -809,13 +885,15 @@ static void DrawGame(Renderer *renderer, GameState *game, u32 highScore) {
     DrawRoad(renderer, game);
 
     DrawTrafficCars(renderer, game);
+    DrawExplosion(renderer, game);
 
     DrawTexture(renderer->carInterior, 0, 0, WHITE);
     if (game->phase == GAME_PHASE_TITLE) {
       DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.58f));
       DrawCenteredText("CAST", 180, 88, (Color){238, 190, 72, 255});
       DrawCenteredText("LANE", 260, 88, RAYWHITE);
-      DrawCenteredText("PRESS ENTER OR CLICK TO START", 470, 20, RAYWHITE);
+      DrawCenteredText("PRESS ENTER, CLICK, OR TAP TO START", 470, 20,
+                       RAYWHITE);
       DrawCenteredText(TextFormat("HIGH SCORE  %u", highScore), 520, 18,
                        (Color){238, 190, 72, 255});
     }
@@ -834,7 +912,7 @@ static void DrawGame(Renderer *renderer, GameState *game, u32 highScore) {
                        RAYWHITE);
       DrawCenteredText(TextFormat("HIGH SCORE  %u", highScore), 380, 18,
                        (Color){238, 190, 72, 255});
-      DrawCenteredText("PRESS R OR CLICK TO RETRY", 455, 20, RAYWHITE);
+      DrawCenteredText("PRESS R, CLICK, OR TAP TO RETRY", 455, 20, RAYWHITE);
       DrawCenteredText("PRESS T FOR TITLE", 490, 16, LIGHTGRAY);
     } else if (game->phase != GAME_PHASE_TITLE) {
       DrawText(TextFormat("SCORE  %u", game->carsPassed), 560, 20, 20,
@@ -906,6 +984,7 @@ void UpdateDrawFrame(void) {
         UpdateHexGesture(&app.game.gesture, GetMousePosition());
 
     if (result == GESTURE_RESULT_SUCCESS) {
+      app.game.explosionAge = 0.0f;
       app.game.carsPassed++;
       app.highScore = app.game.carsPassed > app.highScore ? app.game.carsPassed
                                                           : app.highScore;
