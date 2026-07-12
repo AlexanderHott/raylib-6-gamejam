@@ -1,8 +1,5 @@
 #include "raylib.h"
 #include "raymath.h"
-#define RAYGUI_IMPLEMENTATION
-#define RAYGUI_NO_ICONS
-#include "raygui.h"
 #include <math.h>
 
 #if defined(PLATFORM_WEB)
@@ -69,6 +66,75 @@ static const f32 trafficCarScale = 3.0f;
 ////////////////////////////////////////////////////////////////////////////////
 
 #define TRAFFIC_CARS_MAX 16
+#define HEX_CHECKPOINTS_MAX 32
+#define HEX_TRAIL_POINTS_MAX 256
+
+typedef enum HexGestureState {
+  HEX_GESTURE_IDLE,
+  HEX_GESTURE_DRAWING,
+  HEX_GESTURE_SUCCESS,
+  HEX_GESTURE_FAILURE,
+} HexGestureState;
+
+typedef struct HexShape {
+  const char *name;
+  Vector2 checkpoints[HEX_CHECKPOINTS_MAX];
+  u32 checkpointCount;
+} HexShape;
+
+static const HexShape hexShapes[] = {
+    {.name = "star",
+     .checkpoints = {{0.50f, 0.04f},
+                     {0.62f, 0.37f},
+                     {0.96f, 0.37f},
+                     {0.69f, 0.58f},
+                     {0.79f, 0.94f},
+                     {0.50f, 0.73f},
+                     {0.21f, 0.94f},
+                     {0.31f, 0.58f},
+                     {0.04f, 0.37f},
+                     {0.38f, 0.37f},
+                     {0.50f, 0.04f}},
+     .checkpointCount = 11},
+    {.name = "bolt",
+     .checkpoints = {{0.62f, 0.04f},
+                     {0.20f, 0.54f},
+                     {0.48f, 0.54f},
+                     {0.36f, 0.96f},
+                     {0.80f, 0.42f},
+                     {0.53f, 0.42f},
+                     {0.62f, 0.04f}},
+     .checkpointCount = 7},
+    {.name = "hourglass",
+     .checkpoints = {{0.18f, 0.08f},
+                     {0.82f, 0.08f},
+                     {0.50f, 0.50f},
+                     {0.82f, 0.92f},
+                     {0.18f, 0.92f},
+                     {0.50f, 0.50f},
+                     {0.18f, 0.08f}},
+     .checkpointCount = 7},
+    {.name = "diamond",
+     .checkpoints = {{0.50f, 0.04f},
+                     {0.94f, 0.50f},
+                     {0.50f, 0.96f},
+                     {0.06f, 0.50f},
+                     {0.50f, 0.04f},
+                     {0.50f, 0.96f}},
+     .checkpointCount = 6},
+};
+
+#define HEX_SHAPE_COUNT (sizeof(hexShapes) / sizeof(hexShapes[0]))
+
+typedef struct HexGesture {
+  const HexShape *shape;
+  Rectangle bounds;
+  Vector2 trail[HEX_TRAIL_POINTS_MAX];
+  u32 trailCount;
+  u32 nextCheckpoint;
+  HexGestureState state;
+  f32 resultAge;
+} HexGesture;
 
 typedef struct WorldVector3 {
   f32 x;
@@ -96,6 +162,9 @@ typedef struct GameState {
   TrafficCar cars[TRAFFIC_CARS_MAX];
   u32 carCount;
 
+  HexGesture gesture;
+  u32 shapeIndex;
+
   f32 roadScroll;
   f32 playerSpeed;
   f32 roadBottomY;
@@ -110,6 +179,7 @@ typedef struct Renderer {
 
   Texture2D background;
   Texture2D trafficCar;
+  Texture2D carInterior;
 
   u32 screenWidth;
   u32 screenHeight;
@@ -137,6 +207,92 @@ static void DrawQuad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color color) {
   DrawTriangle(a, c, d, color);
 }
 
+static Vector2 GetCheckpointPosition(const HexGesture *gesture, u32 index) {
+  Vector2 point = gesture->shape->checkpoints[index];
+  return (Vector2){
+      .x = gesture->bounds.x + point.x * gesture->bounds.width,
+      .y = gesture->bounds.y + point.y * gesture->bounds.height,
+  };
+}
+
+static f32 DistanceToSegment(Vector2 point, Vector2 start, Vector2 end) {
+  Vector2 segment = Vector2Subtract(end, start);
+  f32 lengthSquared = Vector2LengthSqr(segment);
+  if (lengthSquared == 0.0f) {
+    return Vector2Distance(point, start);
+  }
+
+  f32 t =
+      Vector2DotProduct(Vector2Subtract(point, start), segment) / lengthSquared;
+  t = Clamp(t, 0.0f, 1.0f);
+  Vector2 nearest = Vector2Add(start, Vector2Scale(segment, t));
+  return Vector2Distance(point, nearest);
+}
+
+static void AdvanceHexCheckpoints(HexGesture *gesture, Vector2 start,
+                                  Vector2 end) {
+  const f32 checkpointRadius = 24.0f;
+
+  while (gesture->nextCheckpoint < gesture->shape->checkpointCount) {
+    Vector2 checkpoint =
+        GetCheckpointPosition(gesture, gesture->nextCheckpoint);
+    if (DistanceToSegment(checkpoint, start, end) > checkpointRadius) {
+      break;
+    }
+    gesture->nextCheckpoint++;
+  }
+}
+
+static void BeginHexGesture(HexGesture *gesture, Vector2 cursor) {
+  gesture->trail[0] = cursor;
+  gesture->trailCount = 1;
+  gesture->nextCheckpoint = 0;
+  gesture->state = HEX_GESTURE_DRAWING;
+  gesture->resultAge = 0.0f;
+  AdvanceHexCheckpoints(gesture, cursor, cursor);
+}
+
+static bool UpdateHexGesture(HexGesture *gesture, Vector2 cursor, f32 dt) {
+  const f32 sampleDistance = 4.0f;
+  const f32 resultDuration = 0.75f;
+
+  if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+    BeginHexGesture(gesture, cursor);
+  }
+
+  if (gesture->state == HEX_GESTURE_DRAWING &&
+      IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+    Vector2 previous = gesture->trail[gesture->trailCount - 1];
+    if (Vector2Distance(previous, cursor) >= sampleDistance &&
+        gesture->trailCount < HEX_TRAIL_POINTS_MAX) {
+      gesture->trail[gesture->trailCount++] = cursor;
+      AdvanceHexCheckpoints(gesture, previous, cursor);
+    }
+  }
+
+  if (gesture->state == HEX_GESTURE_DRAWING &&
+      IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+    gesture->state = gesture->nextCheckpoint == gesture->shape->checkpointCount
+                         ? HEX_GESTURE_SUCCESS
+                         : HEX_GESTURE_FAILURE;
+    gesture->resultAge = 0.0f;
+  }
+
+  if (gesture->state == HEX_GESTURE_SUCCESS ||
+      gesture->state == HEX_GESTURE_FAILURE) {
+    gesture->resultAge += dt;
+    if (gesture->resultAge >= resultDuration) {
+      bool completed = gesture->state == HEX_GESTURE_SUCCESS;
+      gesture->state = HEX_GESTURE_IDLE;
+      gesture->trailCount = 0;
+      gesture->nextCheckpoint = 0;
+      return completed;
+    }
+  }
+
+  return false;
+}
+
 static void InitGame(GameState *game) {
   memset(game, 0, sizeof(*game));
 
@@ -151,6 +307,10 @@ static void InitGame(GameState *game) {
   game->cars[0] = (TrafficCar){4.0f, 45.0f, 1.8f, 1.3f, 4.0f, RED};
   // game->cars[1] = (TrafficCar){3.0f, 85.0f, 1.8f, 1.3f, 4.0f, BLUE};
   // game->cars[2] = (TrafficCar){3.0f, 130.0f, 1.8f, 1.3f, 4.0f, GREEN};
+
+  game->shapeIndex = 0;
+  game->gesture.shape = &hexShapes[game->shapeIndex];
+  game->gesture.bounds = (Rectangle){190.0f, 190.0f, 340.0f, 340.0f};
 }
 
 static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
@@ -168,10 +328,16 @@ static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
   SetTextureFilter(renderer->target.texture, TEXTURE_FILTER_BILINEAR);
 
   renderer->background = LoadTexture("resources/background.png");
-  ASSERT(IsTextureValid(renderer->background), "failed to load background");
+  ASSERT(IsTextureValid(renderer->background),
+         "failed to load background texture");
 
   renderer->trafficCar = LoadTexture("resources/car.png");
-  ASSERT(IsTextureValid(renderer->trafficCar), "failed to load traffic car");
+  ASSERT(IsTextureValid(renderer->trafficCar),
+         "failed to load traffic car texture");
+
+  renderer->carInterior = LoadTexture("resources/car-interior.png");
+  ASSERT(IsTextureValid(renderer->carInterior),
+         "failed to load car interior texture");
 }
 
 static void ShutdownRenderer(Renderer *renderer) {
@@ -214,24 +380,63 @@ static void DrawRoad(const Renderer *renderer, const GameState *game) {
   }
 }
 
-static void DrawDebugUi(Renderer *renderer, GameState *game) {
-  (void)renderer;
-
-  TrafficCar *car = &game->cars[0];
-
-  GuiPanel((Rectangle){12, 64, 276, 112}, "traffic car tuning");
-
-  GuiSliderBar((Rectangle){104, 92, 128, 16}, "position",
-               TextFormat("%.1f", car->z), &car->z, 1.1f, 150.0f);
-  GuiSliderBar((Rectangle){104, 148, 128, 16}, "speed",
-               TextFormat("%.1f", game->playerSpeed), &game->playerSpeed, 0.0f,
-               90.0f);
-
-  f32 viewAngle = atan2f(car->x, car->z);
-  DrawText(TextFormat("view angle: %.02f", viewAngle), 104, 196, 16, BLACK);
+static const char *GetHexGestureStateName(HexGestureState state) {
+  switch (state) {
+  case HEX_GESTURE_IDLE:
+    return "idle";
+  case HEX_GESTURE_DRAWING:
+    return "drawing";
+  case HEX_GESTURE_SUCCESS:
+    return "success";
+  case HEX_GESTURE_FAILURE:
+    return "failure";
+  }
+  return "unknown";
 }
 
-static void DrawDebug(Renderer *renderer, GameState *game) {
+static void DrawHexGesture(const HexGesture *gesture) {
+  Color trailColor = (Color){190, 100, 255, 255};
+  if (gesture->state == HEX_GESTURE_SUCCESS) {
+    trailColor = (Color){80, 255, 180, 255};
+  } else if (gesture->state == HEX_GESTURE_FAILURE) {
+    trailColor = (Color){255, 60, 80, 255};
+  }
+
+  for (u32 i = 1; i < gesture->shape->checkpointCount; i++) {
+    DrawLineEx(GetCheckpointPosition(gesture, i - 1),
+               GetCheckpointPosition(gesture, i), 2.0f, Fade(LIGHTGRAY, 0.35f));
+  }
+
+  for (u32 i = 0; i < gesture->shape->checkpointCount; i++) {
+    Vector2 checkpoint = GetCheckpointPosition(gesture, i);
+    Color color = i < gesture->nextCheckpoint ? GREEN : LIGHTGRAY;
+    DrawCircleV(checkpoint, i == gesture->nextCheckpoint ? 7.0f : 4.0f,
+                Fade(color, 0.75f));
+  }
+
+  for (u32 i = 1; i < gesture->trailCount; i++) {
+    DrawLineEx(gesture->trail[i - 1], gesture->trail[i], 11.0f,
+               Fade(trailColor, 0.20f));
+    DrawLineEx(gesture->trail[i - 1], gesture->trail[i], 4.0f, trailColor);
+  }
+}
+
+static void DrawHexGestureDebugUi(const HexGesture *gesture) {
+  DrawRectangle(12, 54, 250, 112, Fade(BLACK, 0.72f));
+  DrawRectangleLines(12, 54, 250, 112, Fade(RAYWHITE, 0.55f));
+  DrawText("GESTURE DEBUG", 24, 64, 18, RAYWHITE);
+  DrawText(TextFormat("shape: %s", gesture->shape->name), 24, 88, 16,
+           LIGHTGRAY);
+  DrawText(TextFormat("state: %s", GetHexGestureStateName(gesture->state)), 24,
+           108, 16, LIGHTGRAY);
+  DrawText(TextFormat("checkpoint: %u / %u", gesture->nextCheckpoint,
+                      gesture->shape->checkpointCount),
+           24, 128, 16, LIGHTGRAY);
+  DrawText(TextFormat("trail samples: %u", gesture->trailCount), 24, 148, 16,
+           LIGHTGRAY);
+}
+
+static void DrawTrafficCars(Renderer *renderer, GameState *game) {
 
   const Camera25D *cam = &renderer->camera;
   const Texture2D texture = renderer->trafficCar;
@@ -304,7 +509,11 @@ static void DrawGame(Renderer *renderer, GameState *game) {
     DrawTexture(renderer->background, 0, 0, WHITE);
     DrawRoad(renderer, game);
 
-    DrawDebug(renderer, game);
+    DrawTrafficCars(renderer, game);
+
+    DrawTexture(renderer->carInterior, 0, 0, WHITE);
+
+    DrawHexGesture(&game->gesture);
 
     DrawText("Passing slower cars in the right lane", 20, 20, 20, RAYWHITE);
   }
@@ -320,7 +529,7 @@ static void DrawGame(Renderer *renderer, GameState *game) {
                    (Rectangle){0, 0, (f32)renderer->screenWidth,
                                (f32)renderer->screenHeight},
                    (Vector2){0, 0}, 0.0f, WHITE);
-    DrawDebugUi(renderer, game);
+    DrawHexGestureDebugUi(&game->gesture);
   }
   EndDrawing();
 }
@@ -358,6 +567,10 @@ i32 main(void) {
 void UpdateDrawFrame(void) {
   f32 dt = GetFrameTime();
 
+  if (UpdateHexGesture(&app.game.gesture, GetMousePosition(), dt)) {
+    app.game.shapeIndex = (app.game.shapeIndex + 1) % HEX_SHAPE_COUNT;
+    app.game.gesture.shape = &hexShapes[app.game.shapeIndex];
+  }
   UpdateGame(&app.game, dt);
   DrawGame(&app.renderer, &app.game);
 
