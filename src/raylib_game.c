@@ -84,6 +84,12 @@ typedef enum HexGestureState {
   HEX_GESTURE_FAILURE,
 } HexGestureState;
 
+typedef enum GestureAnchorState {
+  GESTURE_ANCHOR_OFF,
+  GESTURE_ANCHOR_ON,
+  GESTURE_ANCHOR_NEXT,
+} GestureAnchorState;
+
 typedef struct HexShape {
   const char *name;
   Vector2 checkpoints[HEX_CHECKPOINTS_MAX];
@@ -156,6 +162,7 @@ typedef struct HexGesture {
   u32 nextCheckpoint;
   HexGestureState state;
   f32 resultAge;
+  f32 anchorRevealAge;
 } HexGesture;
 
 typedef struct WorldVector3 {
@@ -207,6 +214,7 @@ typedef struct Renderer {
   Texture2D trafficCar;
   Texture2D carInterior;
   Texture2D wizardHand;
+  Texture2D gestureAnchor;
 
   u32 screenWidth;
   u32 screenHeight;
@@ -372,9 +380,14 @@ static void InitRenderer(Renderer *renderer, u32 width, u32 height) {
   renderer->wizardHand = LoadTexture("resources/wizard-hand.png");
   ASSERT(IsTextureValid(renderer->wizardHand),
          "failed to load wizard hand texture");
+
+  renderer->gestureAnchor = LoadTexture("resources/gesture-anchor.png");
+  ASSERT(IsTextureValid(renderer->gestureAnchor),
+         "failed to load gesture anchor texture");
 }
 
 static void ShutdownRenderer(Renderer *renderer) {
+  UnloadTexture(renderer->gestureAnchor);
   UnloadTexture(renderer->wizardHand);
   UnloadTexture(renderer->carInterior);
   UnloadTexture(renderer->trafficCar);
@@ -384,6 +397,7 @@ static void ShutdownRenderer(Renderer *renderer) {
 }
 
 static void UpdateGame(GameState *game, f32 dt) {
+  game->gesture.anchorRevealAge += dt;
   game->roadScroll -= game->playerSpeed * dt;
   if (game->roadScroll < 0.0f) {
     game->roadScroll += 180.0f;
@@ -430,7 +444,36 @@ static const char *GetHexGestureStateName(HexGestureState state) {
   return "unknown";
 }
 
-static void DrawHexGesture(const HexGesture *gesture) {
+static GestureAnchorState GetGestureAnchorState(const HexGesture *gesture,
+                                                u32 index) {
+  if (index < gesture->nextCheckpoint) {
+    return GESTURE_ANCHOR_ON;
+  }
+  if (index == gesture->nextCheckpoint) {
+    return GESTURE_ANCHOR_NEXT;
+  }
+  return GESTURE_ANCHOR_OFF;
+}
+
+static void DrawGestureAnchor(Texture2D texture, Vector2 position,
+                              GestureAnchorState state, f32 revealProgress) {
+  const f32 frameWidth = (f32)texture.width / 3.0f;
+  const f32 frameHeight = (f32)texture.height;
+  f32 eased = 1.0f - powf(1.0f - revealProgress, 3.0f);
+  f32 scale = 0.65f + 0.35f * eased;
+  Rectangle source = {(f32)state * frameWidth, 0.0f, frameWidth, frameHeight};
+  Rectangle destination = {position.x, position.y, frameWidth * scale,
+                           frameHeight * scale};
+  Vector2 origin = {destination.width * 0.5f, destination.height * 0.5f};
+
+  DrawTexturePro(texture, source, destination, origin, 0.0f,
+                 Fade(WHITE, eased));
+}
+
+static void DrawHexGesture(const Renderer *renderer,
+                           const HexGesture *gesture) {
+  const f32 anchorStagger = 0.200f;
+  const f32 anchorRevealDuration = 0.500f;
   Color trailColor = (Color){190, 100, 255, 255};
   if (gesture->state == HEX_GESTURE_SUCCESS) {
     trailColor = (Color){80, 255, 180, 255};
@@ -438,16 +481,16 @@ static void DrawHexGesture(const HexGesture *gesture) {
     trailColor = (Color){255, 60, 80, 255};
   }
 
-  for (u32 i = 1; i < gesture->shape->checkpointCount; i++) {
-    DrawLineEx(GetCheckpointPosition(gesture, i - 1),
-               GetCheckpointPosition(gesture, i), 2.0f, Fade(LIGHTGRAY, 0.35f));
-  }
-
   for (u32 i = 0; i < gesture->shape->checkpointCount; i++) {
-    Vector2 checkpoint = GetCheckpointPosition(gesture, i);
-    Color color = i < gesture->nextCheckpoint ? GREEN : LIGHTGRAY;
-    DrawCircleV(checkpoint, i == gesture->nextCheckpoint ? 7.0f : 4.0f,
-                Fade(color, 0.75f));
+    f32 delay = (f32)i * anchorStagger;
+    f32 progress =
+        Clamp((gesture->anchorRevealAge - delay) / anchorRevealDuration, 0.0f,
+              1.0f);
+    if (progress > 0.0f) {
+      DrawGestureAnchor(renderer->gestureAnchor,
+                        GetCheckpointPosition(gesture, i),
+                        GetGestureAnchorState(gesture, i), progress);
+    }
   }
 
   for (u32 i = 1; i < gesture->trailCount; i++) {
@@ -550,7 +593,7 @@ static void DrawGame(Renderer *renderer, GameState *game) {
 
     DrawTexture(renderer->carInterior, 0, 0, WHITE);
     DrawWizardHand(renderer, &game->gesture);
-    DrawHexGesture(&game->gesture);
+    DrawHexGesture(renderer, &game->gesture);
 
     DrawText("Passing slower cars in the right lane", 20, 20, 20, RAYWHITE);
   }
@@ -607,6 +650,7 @@ void UpdateDrawFrame(void) {
   if (UpdateHexGesture(&app.game.gesture, GetMousePosition(), dt)) {
     app.game.shapeIndex = (app.game.shapeIndex + 1) % HEX_SHAPE_COUNT;
     app.game.gesture.shape = &hexShapes[app.game.shapeIndex];
+    app.game.gesture.anchorRevealAge = 0.0f;
   }
   UpdateGame(&app.game, dt);
   DrawGame(&app.renderer, &app.game);
